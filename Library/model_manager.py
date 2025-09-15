@@ -16,14 +16,13 @@ for i in range(torch.cuda.device_count()):
 
 class ModelManager():
 
-    def __init__(self, model_name = "microsoft/phi-3.5-vision-instruct"):
+    def __init__(self, base_model="microsoft/phi-3.5-vision-instruct", fine_tuned_path = ""):
 
-        self.model_path = model_name
         self.processor = AutoProcessor.from_pretrained(
-            self.model_path, trust_remote_code = True)
+            base_model, trust_remote_code = True)
  
         self.model = AutoModelForCausalLM.from_pretrained(
-            self.model_path,
+            base_model if fine_tuned_path == "" else fine_tuned_path,
             # Using normal attention instead of flash attention
             _attn_implementation = "eager",
             # The new version has dtype instead of torch_dtype
@@ -58,9 +57,9 @@ class ModelManager():
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.model.to(self.device)
 
-    def run_inference(self, image, prompt):
+    # images is a list of image, prompt is str
+    def run_inference(self, images, prompt):
 
-        images = []
         messages = messages = [
             {"role": "user", "content": prompt + "<|image_1|>\n"}
         ]
@@ -70,8 +69,6 @@ class ModelManager():
             tokenize=False,
             add_generation_prompt=True
         )
-
-        images = [image]
 
         inputs = self.processor(
             prompt,
@@ -98,44 +95,6 @@ class ModelManager():
         response = self.processor.tokenizer.decode(clean_ids[0], skip_special_tokens = True)
 
         return response
-
-    def gpt_decoding_func(self, input_ids, labels, tokenizer):
-        """
-        Debug function to decode and compare input_ids vs labels.
-        - input_ids: torch.Tensor or list of token IDs
-        - labels: torch.Tensor or list of token IDs (-100 masked)
-        - tokenizer: your Hugging Face tokenizer
-        """
-
-        # Convert tensors to lists if needed
-        if hasattr(input_ids, "tolist"):
-            input_ids = input_ids.tolist()
-        if hasattr(labels, "tolist"):
-            labels = labels.tolist()
-
-        # If batched, take first row
-        if isinstance(input_ids[0], list):
-            input_ids = input_ids[0]
-        if isinstance(labels[0], list):
-            labels = labels[0]
-
-        # Decode input_ids normally
-        decoded_input = tokenizer.decode([i for i in input_ids if i >= 0])
-
-        # Decode labels but skip -100 (masked)
-        decoded_labels = tokenizer.decode([l for l in labels if l != -100 and l >= 0])
-
-        print("Input IDs (full conversation):")
-        print(decoded_input)
-        print("="*80)
-        print("Labels (only assistant answer):")
-        print(decoded_labels)
-        print("="*80)
-
-        # Quick stats
-        print("Input length:", len(input_ids))
-        print("Label length:", len(labels))
-        print("Masked tokens in labels:", sum(1 for l in labels if l == -100))
 
     def preprocess(self, example):
 
@@ -233,10 +192,7 @@ class ModelManager():
         dataset = load_dataset(dataset_name, split="testmini")
         self.dataset = dataset
 
-    def make_prompt(self, choices, question):
-        return f"Answer the following question: {question}, pick from these chioces: {choices}"
-
-    def benchmark(self, dataset_name="AI4Math/MathVista"):
+    def benchmark(self, get_inputs, compare_outputs, dataset_name="AI4Math/MathVista"):
         
         self.load_dataset(dataset_name)
         self._prepare_for_inference()
@@ -246,25 +202,9 @@ class ModelManager():
         for row in self.dataset:
             total+=1
             # Getting the image and the prompt from the dataset
-            if dataset_name == "AI4Math/MathVista":
-                image = row["decoded_image"]
-                prompt = self.make_prompt(row["choices"], row["question"])
-                pred = self.run_inference(image=image, prompt=prompt).strip()
-
-                answer = row["answer"].strip()
-
-                if answer.lower() in pred.lower():
-                    correct+=1
-                
+            images, prompt = get_inputs(row)
+            pred = self.run_inference(images=images, prompt=prompt).strip()
+            correct+= compare_outputs(row, pred) 
             print("Accuracy: ", correct / total)
+
         return correct / total
-
-
-if __name__ == "__main__":
-
-    manager = ModelManager(save_dir="./phi-3.5_MathVista_with_image")
-    # image = Image.open("./test2.jpg").convert("RGB")
-    # print(manager.run_inference(image, prompt="Describe the image"))
-    manager.benchmark(dataset_name= "AI4Math/MathVista")
-    # manager.fine_tune(dataset_name = "AI4Math/MathVista") 
-    # manager.benchmark()
