@@ -21,6 +21,9 @@ class AdapterProvider():
         return self.preprocess
 
 
+
+
+
 def math_vista_make_prompt(choices, question):
     return f"Answer the following question: {question}, pick from these chioces: {choices}"
 
