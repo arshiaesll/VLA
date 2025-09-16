@@ -1,8 +1,7 @@
 #!/bin/sh
 #SBATCH --job-name=hybridModels
 #SBATCH -N 1    ## requests on 1 node
-#SBATCH -n 28   ## requests on 1 CPU
-#SBATCH --gres=gpu:1 ## requests on 1 GPU
+#SBATCH --gres=gpu:2                 # request 2 GPUs
 #SBATCH --output /work/aeslami/VLA_results/job%j.out
 #SBATCH --error /work/aeslami/VLA_results/job%j.err
 #SBATCH -p gpu-v100-32gb
@@ -10,7 +9,7 @@
 ## Limit threads to be equal to slurm request
 # export OMP_NUM_THREADS=$SLURM_CPUS_PER_TASK
 
-# Load CUDA module, 10.1 worked ok but the quantization gave an error
+# Load CUDA module
 module load cuda/12.1
 
 # Load Anaconda module (adjust the path if necessary)
@@ -21,6 +20,6 @@ module load python3/anaconda/2023.9
 source activate /work/aeslami/VLA/VLA_env
 
 # Add this line to pass the no_quant flag if it's set to true
-python /work/aeslami/LM_finetune/finetune3/main.py
+accelerate launch --multi-gpu /work/aeslami/VLA/main.py train
 
 
