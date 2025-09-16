@@ -2,6 +2,7 @@ from transformers import AutoModelForCausalLM, AutoProcessor, AutoConfig, Traine
 import torch
 from datasets import load_dataset
 import os
+import subprocess
 
 print("Libraries Loaded")
 print("CUDA Available: ", torch.cuda.is_available())
@@ -18,9 +19,10 @@ class ModelManager():
 
     def __init__(self, base_model="microsoft/phi-3.5-vision-instruct", fine_tuned_path = ""):
 
+        self.base_model = base_model
         self.processor = AutoProcessor.from_pretrained(
             base_model, trust_remote_code = True)
- 
+
         self.model = AutoModelForCausalLM.from_pretrained(
             base_model if fine_tuned_path == "" else fine_tuned_path,
             # Using normal attention instead of flash attention
@@ -110,21 +112,10 @@ class ModelManager():
             add_generation_prompt=False
         )
 
-        # print(full_prompt)
-
         model_inputs = self.processor(
             text=full_prompt,
             images=image,
-            # truncation=True,
-            # padding="max_length",
-            # max_length = 512
         )
-
-        # user_input_ids = self.processor.tokenizer.apply_chat_template(
-        #     messages[:-1],
-        #     tokenize = True,
-        #     add_generation_prompt = True
-        # )
 
         input_ids = model_inputs["input_ids"]
         input_ids[input_ids == -1] = self.processor.tokenizer.pad_token_id
@@ -141,12 +132,19 @@ class ModelManager():
 
         return model_inputs
 
-    def fine_tune(self, dataset_name, save_dir):
+    # Outputs in base_model-dataset_name-uuid
+    def fine_tune(self, dataset_name, preprocess):
         # Loading the dataset
         self.load_dataset(dataset_name)
         self.freeze_LLM_part()
 
-        processed_dataset = self.dataset.map(lambda ex: self.preprocess(ex))
+        print("Model: ", self.base_model)
+        print("Dataset: ", self.dataset_name)
+        epoch_num = 10
+        print("Epochs: ", epoch_num)
+
+        save_dir = f"{self.base_model}-{self.base_model}"
+        processed_dataset = self.dataset.map(lambda ex: preprocess(ex))
         print("Dataset prorcessed...")
 
         # This aligns both the input_ids and the labels
@@ -157,11 +155,12 @@ class ModelManager():
         ) 
 
         # This is to work with deepspeed and ZeRO stage 3
+        output_dir = f"./Models/{save_dir}"
         training_args = TrainingArguments(
-            output_dir = f"./Models/{save_dir}",
+            output_dir = output_dir,
             learning_rate = 5e-5,
-            num_train_epochs = 2,
-            save_steps = 200,
+            num_train_epochs = epoch_num,
+            save_steps = 500,
             logging_steps = 50,
             per_device_train_batch_size=1,
             gradient_accumulation_steps=1,
@@ -186,6 +185,27 @@ class ModelManager():
 
         # print("Start of training...")
         trainer.train()
+        print("Training is finished, merging the outputs from GPU's")
+        self._merge_finetune_outputs(output_dir)
+
+    def _merge_finetune_outputs(self, output_dir):
+
+        checkpoint_root = os.path.abspath(output_dir)
+
+        for ckpt in sorted(os.listdir(checkpoint_root)):
+            ckpt_path = os.path.join(checkpoint_root, ckpt)
+
+            print("Merging: ", ckpt_path)
+            subprocess.run(["python",
+                os.path.join(ckpt_path, "zero_to_fp32.py"),
+                ckpt_path,
+                os.path.join(ckpt_path, "pytorch_model.bin"),])
+ 
+            subprocess.run(f"mv {ckpt_path}/pytorch_model.bin/* {ckpt_path}/", shell=True)
+
+    def _save_benchmark_results():
+        # Needs the model and dataset to save in a .txt file 
+        pass
 
     def load_dataset(self, dataset_name = "AI4Math/MathVista"):
         self.dataset_name = dataset_name
