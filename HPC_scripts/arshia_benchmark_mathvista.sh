@@ -1,7 +1,7 @@
 #!/bin/sh
-#SBATCH --job-name=hybridModels
+#SBATCH --job-name=VLA
 #SBATCH -N 1    ## requests on 1 node
-#SBATCH --gres=gpu:2                 # request 2 GPUs
+#SBATCH --gres=gpu:1                 # request 2 GPUs
 #SBATCH --output /work/aeslami/VLA_results/job%j.out
 #SBATCH --error /work/aeslami/VLA_results/job%j.err
 #SBATCH -p gpu-H200
@@ -20,6 +20,6 @@ module load python3/anaconda/3.12
 source activate /work/aeslami/VLA/VLA_env
 
 # Add this line to pass the no_quant flag if it's set to true
-accelerate launch --multi-gpu /work/aeslami/VLA/main.py train
+python /work/aeslami/VLA/main.py benchmark --from-finetuned /work/aeslami/VLA/Models/microsoft/phi-3.5-vision-instruct-microsoft/phi-3.5-vision-instruct/checkpoint-5000
 
 

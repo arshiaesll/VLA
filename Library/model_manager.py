@@ -26,7 +26,7 @@ class ModelManager():
         self.model = AutoModelForCausalLM.from_pretrained(
             base_model if fine_tuned_path == "" else fine_tuned_path,
             # Using normal attention instead of flash attention
-            _attn_implementation = "eager",
+            # _attn_implementation = "eager",
             # The new version has dtype instead of torch_dtype
             torch_dtype = torch.float16,
             trust_remote_code = True,
@@ -136,7 +136,7 @@ class ModelManager():
     def fine_tune(self, dataset_name, preprocess):
         # Loading the dataset
         self.load_dataset(dataset_name)
-        self.freeze_LLM_part()
+        # self.freeze_LLM_part()
 
         print("Model: ", self.base_model)
         print("Dataset: ", self.dataset_name)

@@ -102,7 +102,7 @@ if __name__ == "__main__":
     elif args.mode == "benchmark":
         dataset_name = args.benchmark_dataset
         provider = AdapterProvider(dataset_name=dataset_name)
-        manager.benchmark(provider.get_get_inputs, provider.get_compare_outputs, dataset_name=dataset_name)
+        manager.benchmark(provider.get_inputs, provider.compare_outputs, dataset_name=dataset_name)
 
 
     # manager = ModelManager(fine_tuned_path="./Models/phi-3.5_MathVista/checkpoint-1000")
