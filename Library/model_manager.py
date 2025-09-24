@@ -1,4 +1,4 @@
-from transformers import AutoModelForCausalLM, AutoProcessor, AutoConfig, Trainer, TrainingArguments, DataCollatorWithPadding, DataCollatorForSeq2Seq
+from transformers import AutoModelForCausalLM, AutoProcessor, AutoConfig, Trainer, TrainingArguments, DataCollatorWithPadding, DataCollatorForSeq2Seq, DataCollatorForLanguageModeling
 import torch
 from datasets import load_dataset
 import os
@@ -17,26 +17,24 @@ for i in range(torch.cuda.device_count()):
 
 class ModelManager():
 
-    def __init__(self, base_model="microsoft/phi-3.5-vision-instruct", fine_tuned_path = ""):
-
+    def __init__(self, base_model="microsoft/Phi-3.5-vision-instruct", fine_tuned_path = ""):
+        
+        # base_model = "microsoft/phi-3-mini-4k-instruct"
         self.base_model = base_model
         self.processor = AutoProcessor.from_pretrained(
             base_model, trust_remote_code = True)
 
         self.model = AutoModelForCausalLM.from_pretrained(
             base_model if fine_tuned_path == "" else fine_tuned_path,
-            # Using normal attention instead of flash attention
-            # _attn_implementation = "eager",
+            # Using flash attention
             # The new version has dtype instead of torch_dtype
             torch_dtype = torch.float16,
             trust_remote_code = True,
             )
-
         self.processor.tokenizer.eos_token = "<|end|>"
         self.processor.tokenizer.pad_token = "<|end|>"
         self.model.config.eos_token_id = self.processor.tokenizer.convert_tokens_to_ids("<|end|>")
         self.model.config.pad_token_id = self.model.config.eos_token_id
-        # self.model.gradient_checkpointing_enable()
 
     def freeze_LLM_part(self):
         # Freezing the LLM part
@@ -57,14 +55,21 @@ class ModelManager():
 
     def _prepare_for_inference(self):
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        print(f"Using {self.device}")
         self.model.to(self.device)
 
     # images is a list of image, prompt is str
-    def run_inference(self, images, prompt):
+    def run_inference(self, prompt = "", images = [], messages = []):
+        
+        image_str_lst = [f"<|image_{i}|>" for i in range(len(images))]
+        image_str = "\n".join(image_str_lst)
 
-        messages = messages = [
-            {"role": "user", "content": prompt + "<|image_1|>\n"}
-        ]
+        if messages:
+            pass
+        else:
+            messages = messages = [
+                {"role": "user", "content": prompt + image_str}
+            ]
 
         prompt = self.processor.tokenizer.apply_chat_template(
             messages,
@@ -74,22 +79,16 @@ class ModelManager():
 
         inputs = self.processor(
             prompt,
-            images
+            images if len(images) > 0 else None
         ).to(self.device)
-
-
-        self.processor.tokenizer.eos_token = "<|end|>"
-        self.processor.tokenizer.pad_token = "<|end|>"
-        self.model.config.eos_token_id = self.processor.tokenizer.convert_tokens_to_ids("<|end|>")
-        self.model.config.pad_token_id = self.model.config.eos_token_id
 
         with torch.inference_mode():
             # Using KV Cache for generation
             output = self.model.generate(
                 **inputs,
-                max_new_tokens = 50,
-                # eos_token_id = self.model.config.eos_token_id,
-                # pad_token_id = self.model.config.eos_token_id,
+                max_new_tokens = 200,
+                eos_token_id = self.model.config.eos_token_id,
+                pad_token_id = self.model.config.eos_token_id,
             )
 
         output = output[:, inputs["input_ids"].shape[1] :]
@@ -98,74 +97,49 @@ class ModelManager():
 
         return response
 
-    def preprocess(self, example):
-
-        image = example["decoded_image"]
-        messages = [
-            {"role": "user", "content": f"{example['question']} {example['choices']}" + "<|image_1|>\n"},
-            {"role": "assistant", "content": example["answer"]}
-        ]
-
-        full_prompt = self.processor.tokenizer.apply_chat_template(
-            messages,
-            tokenize=False,
-            add_generation_prompt=False
-        )
-
-        model_inputs = self.processor(
-            text=full_prompt,
-            images=image,
-        )
-
-        input_ids = model_inputs["input_ids"]
-        input_ids[input_ids == -1] = self.processor.tokenizer.pad_token_id
-        model_inputs["input_ids"] = input_ids
-        labels = model_inputs["input_ids"].clone()
- 
-        model_inputs["labels"] = labels
-        # for key in model_inputs.keys():
-        #     print(key, ": ", model_inputs[key].shape)
-
-        model_inputs = {k: v[0] for k, v in model_inputs.items()}
-        # print("Input ids: ", model_inputs["input_ids"])
-        # print("Labels: ", model_inputs["labels"])
-
-        return model_inputs
-
     # Outputs in base_model-dataset_name-uuid
-    def fine_tune(self, dataset_name, preprocess):
+    def fine_tune(self, dataset_name:str, split:str, preprocess, save_path , epoch_num=2):
         # Loading the dataset
-        self.load_dataset(dataset_name)
+        self.load_dataset(dataset_name, split)
         # self.freeze_LLM_part()
 
         print("Model: ", self.base_model)
         print("Dataset: ", self.dataset_name)
-        epoch_num = 10
         print("Epochs: ", epoch_num)
 
-        save_dir = f"{self.base_model}-{self.base_model}"
-        processed_dataset = self.dataset.map(lambda ex: preprocess(ex))
+        # save_dir = f"{self.base_model}-{self.dataset_name}"
+        processed_dataset = self.dataset.map(lambda ex: preprocess(ex), remove_columns = self.dataset.column_names)
         print("Dataset prorcessed...")
-
         # This aligns both the input_ids and the labels
+        print(processed_dataset)
+        print(processed_dataset["input_ids"][0])
+        print(processed_dataset["labels"][0])
+        print(processed_dataset["attention_mask"][0])
+
+        self.processor.tokenizer.padding_side = "left"
         data_collator = DataCollatorForSeq2Seq(
             tokenizer=self.processor.tokenizer,
             model=self.model,
             padding="longest"
         ) 
-
-        # This is to work with deepspeed and ZeRO stage 3
-        output_dir = f"./Models/{save_dir}"
+ 
+        sample = [processed_dataset[0], processed_dataset[1]]   # pick two rows
+        batch = data_collator(sample)
+        # print(batch["input_ids"].shape, batch["labels"].shape)
+        
+        # This is to work with accelerate launch ...
+        # output_dir = f"./Models/{save_dir}"
         training_args = TrainingArguments(
-            output_dir = output_dir,
-            learning_rate = 5e-5,
+            output_dir = save_path,
+            learning_rate = 1e-5,
             num_train_epochs = epoch_num,
-            save_steps = 500,
-            logging_steps = 50,
+            warmup_steps=50,
+            bf16=True,
+            save_steps = 1500,
+            logging_steps = 100,
             per_device_train_batch_size=1,
             gradient_accumulation_steps=1,
-            fp16=True,
-            deepspeed="ds_config.json",
+            max_grad_norm = 1.0
         )
 
         trainer = Trainer(
@@ -175,15 +149,11 @@ class ModelManager():
             data_collator=data_collator
         )
 
-        dl = trainer.get_train_dataloader()
-        # item = next(iter(dl))
-        # for key in item.keys():
-        #     print(key, ": ", item[key].shape)
+        # batch = next(iter(trainer.get_train_dataloader()))
+        # print("input_ids: ", batch["input_ids"][0])
+        # print("labels:", batch["labels"][0][:50])
+        # print("valid tokens:", (batch["labels"] != -100).sum().item())
 
-        # print(item["input_ids"])
-        # print(item["labels"])
-
-        # print("Start of training...")
         trainer.train()
         print("Training is finished, merging the outputs from GPU's")
         self._merge_finetune_outputs(output_dir)
@@ -207,9 +177,9 @@ class ModelManager():
         # Needs the model and dataset to save in a .txt file 
         pass
 
-    def load_dataset(self, dataset_name = "AI4Math/MathVista"):
+    def load_dataset(self, dataset_name = "AI4Math/MathVista", split="testmini"):
         self.dataset_name = dataset_name
-        dataset = load_dataset(dataset_name, split="testmini")
+        dataset = load_dataset(dataset_name, split=split)
         self.dataset = dataset
 
     def benchmark(self, get_inputs, compare_outputs, dataset_name="AI4Math/MathVista"):
@@ -228,3 +198,5 @@ class ModelManager():
             print("Accuracy: ", correct / total)
 
         return correct / total
+
+

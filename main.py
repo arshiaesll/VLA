@@ -1,88 +1,34 @@
 from Library.model_manager import ModelManager
+from Library.dataset_process import AdapterProvider
 import argparse
 
 
-class AdapterProvider():
-     
-    def __init__(self, dataset_name) -> None:
-        
-        if dataset_name == "AI4Math/MathVista":
-            self.get_inputs = math_vista_get_inputs
-            self.compare_outputs = math_vista_compare_outputs
-            self.preprocess = math_vista_preprocess
-    
-    def get_get_inputs(self):
-        return self.get_get_inputs 
 
-    def get_compare_outputs(self):
-        return self.compare_outputs
-
-    def get_preprocess(self):
-        return self.preprocess
-
-
-
-
-
-def math_vista_make_prompt(choices, question):
-    return f"Answer the following question: {question}, pick from these chioces: {choices}"
-
-def math_vista_get_inputs(row):
-    image = row["decoded_image"]
-    prompt = math_vista_make_prompt(row["choices"], row["question"])
-    return [image], prompt
-
-def math_vista_compare_outputs(row, pred):
-    if row["answer"].lower() in pred.lower():
-        return 1
-    else:
-        return 0
-
-def math_vista_preprocess(example, processor):
-        image = example["decoded_image"]
-        messages = [
-            {"role": "user", "content": f"{example['question']} {example['choices']}" + "<|image_1|>\n"},
-            {"role": "assistant", "content": example["answer"]}
-        ]
-
-        full_prompt = processor.tokenizer.apply_chat_template(
-            messages,
-            tokenize=False,
-            add_generation_prompt=False
-        )
-
-        model_inputs = processor(
-            text=full_prompt,
-            images=image,
-        )
-
-        input_ids = model_inputs["input_ids"]
-        input_ids[input_ids == -1] = processor.tokenizer.pad_token_id
-        model_inputs["input_ids"] = input_ids
-        labels = model_inputs["input_ids"].clone()
- 
-        model_inputs["labels"] = labels
-        # for key in model_inputs.keys():
-        #     print(key, ": ", model_inputs[key].shape)
-
-        model_inputs = {k: v[0] for k, v in model_inputs.items()}
-        # print("Input ids: ", model_inputs["input_ids"])
-        # print("Labels: ", model_inputs["labels"])
-
-        return model_inputs 
 
 if __name__ == "__main__":
 
-    parser = argparse.ArgumentParser()
-    
-    parser.add_argument("mode", choices=["train", "benchmark"])
-    parser.add_argument("--train-dataset", type=str, default="AI4Math/MathVista", help="Supported datasets are: AI4Math/MathVista")
-    parser.add_argument("--benchmark-dataset", type=str, default="AI4Math/MathVista", help="Supported datasets are: AI4Math/MathVista")
-    parser.add_argument("--from-finetuned", type=str,default=None, help="The path to the checkpoint of the fine-tuned model, ex:./Models/phi-3.5_MathVista/checkpoint-1000")
+    # This is to make datasetnames easier to pass as arguments
+    dataset_dict = {
+        "mathvista": "AI4Math/MathVista",
+        "mathdial": "eth-nlped/mathdial"
+    }
+
+    parser = argparse.ArgumentParser() 
+    parser.add_argument("mode", choices=["train", "benchmark", "inference"])
+    parser.add_argument("--train-dataset", type=str, default="mathvista", help="Supported datasets are: mathvista, mathdial")
+    parser.add_argument("--benchmark-dataset", type=str, default="mathvista", help="Supported datasets are: mathvista, mathdial")
+    parser.add_argument("--from-finetuned", type=str, default=None, help="The path to the checkpoint of the fine-tuned model, ex:./Models/phi-3.5_MathVista/checkpoint-1000")
+    parser.add_argument("--output-dir", type=str, default="./Models", help="The output directory for fine-tuned models")
+    parser.add_argument("--run-name", type=str, help="Name your run(this will be used in the saved place s.t ./Model/{run_name})")
+    parser.add_argument("--inference-dataset", default="mathdial", type=str, help="The dataset to test the inference on")
 
     args = parser.parse_args()
+    if args.run_name:
+        full_fine_tune_path = args.output_dir + "/" + args.run_name
+    else:
+        full_fine_tune_path = args.output_dir
 
-    if args.mode == "train" and not args.train_dataset:
+    if args.mode == "train" and (not args.train_dataset or not args.run_name):
         parser.error("--train-dataset is required when mode is 'train'")
 
     if args.mode == "benchmark" and not args.benchmark_dataset:
@@ -92,18 +38,52 @@ if __name__ == "__main__":
          print("Loading model from: ", args.from_finetuned)
          manager = ModelManager(fine_tuned_path=args.from_finetuned)
     else:
-         manager = ModelManager()
+         manager: ModelManager = ModelManager()
 
     if args.mode == "train":
-         dataset_name = args.train_dataset 
-         provider = AdapterProvider(dataset_name=dataset_name)
-         manager.fine_tune(dataset_name, preprocess= lambda ex: provider.get_preprocess()(ex, manager.processor))
+        print("Preparing the training!") 
+        dataset_name = args.train_dataset 
+        provider = AdapterProvider(dataset_name=dataset_name)
+        split = provider.split
+        manager.fine_tune(dataset_dict[dataset_name], split=split, preprocess= lambda ex: provider.get_preprocess()(ex, manager.processor), save_path = full_fine_tune_path)
 
     elif args.mode == "benchmark":
+        print("Preparing Benchmark!")
         dataset_name = args.benchmark_dataset
         provider = AdapterProvider(dataset_name=dataset_name)
-        manager.benchmark(provider.get_inputs, provider.compare_outputs, dataset_name=dataset_name)
+        manager.benchmark(provider.get_inputs, provider.compare_outputs, dataset_name=dataset_dict[dataset_name])
 
+    elif args.mode == "inference":
+        print("Setting up the inference mode, put 'q' to quit")
+        user = ""
+        manager._prepare_for_inference()
+        dataset_name = args.inference_dataset
+        args.inference_dataset
+        manager.load_dataset(dataset_name = dataset_dict[dataset_name], split="test")
+        example = manager.dataset[1]
+        context = f"""
+            Here is the context for this problem:
+    
+            Student profile:
+            {example['student_profile']}
+            
+            Question:
+            {example['question']}
+            
+            Correct answer:
+            {example['ground_truth']}
+             
+        """
+        messages = []
+        messages.append({"role": "user", "content": context})
+        user = input(f"Type the answer to this question: {example['question']}")
+        messages.append({"role": "user", "content": user})
+        while user != "q":
+            response = manager.run_inference(messages = messages)
+            print("Model: ", response + "\n")
+            messages.append({"role": "assistant", "content": response})
+            user = input()
+            messages.append({"role": "user", "content": user})
 
     # manager = ModelManager(fine_tuned_path="./Models/phi-3.5_MathVista/checkpoint-1000")
     # manager.benchmark(get_inputs = math_vista_get_inputs, 
